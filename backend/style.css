@@ -570,7 +570,7 @@ tr:hover td {
 }
 
 .login-container {
-    width: min(100%, 480px);
+    width: min(100%, 430px);
 }
 
 .login-cabecalho {
@@ -591,15 +591,43 @@ tr:hover td {
 }
 
 .login-card {
-    padding: 28px;
+    padding: 24px;
     background: #fff;
     border: 1px solid var(--cor-linha);
     border-radius: 16px;
     box-shadow: var(--sombra-hover);
 }
 
+.login-card .formulario {
+    gap: 14px;
+}
+
+.login-card .campo {
+    gap: 5px;
+}
+
+.login-card .campo input,
+.login-card .campo select {
+    padding: 9px 11px;
+}
+
 .login-card .form-acoes {
+    align-items: center;
+    gap: 16px;
     margin-top: 10px;
+}
+
+.login-card .link-senha,
+.login-card .login-cadastro a {
+    color: var(--cor-primaria-escura);
+    font-size: 13px;
+    text-decoration: underline;
+}
+
+.login-card .login-cadastro {
+    margin-top: 0;
+    text-align: center;
+    font-size: 13px;
 }
 
 .entrar {
