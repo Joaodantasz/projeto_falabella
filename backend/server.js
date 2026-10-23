@@ -13,6 +13,7 @@ const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 
@@ -20,8 +21,9 @@ app.use(cors());
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: false }));
 
-// Caminho fixo para evitar abrir outro banco por engano.
-const caminhoBanco = path.join(__dirname, 'banco.db');
+// Usa o banco na raiz do projeto e mantém o antigo da pasta backend como origem da migração.
+const caminhoBanco = path.join(__dirname, '..', 'banco.db');
+const caminhoBancoAnterior = path.join(__dirname, 'banco.db');
 
 const db = new sqlite3.Database(caminhoBanco);
 
@@ -307,6 +309,10 @@ async function prepararBanco() {
         )
     `);
 
+    await adicionarCampos('ordens_servico', {
+        nivel_emergencia: 'TEXT'
+    });
+
     await executar(`
         INSERT OR IGNORE INTO status_os (id_status, descricao)
         VALUES
@@ -314,6 +320,85 @@ async function prepararBanco() {
             (2, 'Concluída'),
             (3, 'Pendente')
     `);
+}
+
+async function migrarBancoAnterior() {
+    if (!fs.existsSync(caminhoBancoAnterior)) return;
+
+    await executar(`
+        CREATE TABLE IF NOT EXISTS migracoes_banco (
+            chave TEXT PRIMARY KEY
+        )
+    `);
+
+    const chaveMigracao = 'migrar-backend-para-raiz-v1';
+    const migracaoConcluida = await buscarUm(
+        'SELECT chave FROM migracoes_banco WHERE chave = ?',
+        [chaveMigracao]
+    );
+    if (migracaoConcluida) return;
+
+    await executar('ATTACH DATABASE ? AS banco_anterior', [caminhoBancoAnterior]);
+    let transacaoAberta = false;
+
+    try {
+        await executar('BEGIN TRANSACTION');
+        transacaoAberta = true;
+
+        await executar(`
+            INSERT OR IGNORE INTO status_os (id_status, descricao)
+            SELECT id_status, descricao FROM banco_anterior.status_os
+        `);
+        await executar(`
+            INSERT OR IGNORE INTO usuarios
+                (id_usuario, nome, email, senha_hash, idade, data_nascimento, genero, rm)
+            SELECT id_usuario, nome, email, senha_hash, idade, data_nascimento, genero, rm
+            FROM banco_anterior.usuarios
+        `);
+        await executar(`
+            INSERT OR IGNORE INTO tecnicos
+                (id_tecnico, nome, email, senha_hash, idade, data_nascimento,
+                 genero, nivel, bio, horario_contato, data_disponivel)
+            SELECT id_tecnico, nome, email, senha_hash, idade, data_nascimento,
+                   genero, nivel, bio, horario_contato, data_disponivel
+            FROM banco_anterior.tecnicos
+        `);
+        await executar(`
+            INSERT OR IGNORE INTO clientes (id_cliente, nome, telefone, email)
+            SELECT id_cliente, nome, telefone, email FROM banco_anterior.clientes
+        `);
+        await executar(`
+            INSERT OR IGNORE INTO equipamentos (id_equipamento, nome)
+            SELECT id_equipamento, nome FROM banco_anterior.equipamentos
+        `);
+        await executar(`
+            INSERT OR IGNORE INTO ordens_servico
+                (id_os, descricao_problema, data_os, nivel_emergencia,
+                 id_cliente, id_tecnico, id_equipamento, id_status)
+            SELECT id_os, descricao_problema, data_os, nivel_emergencia,
+                   id_cliente, id_tecnico, id_equipamento, id_status
+            FROM banco_anterior.ordens_servico
+        `);
+        await executar(
+            'INSERT INTO migracoes_banco (chave) VALUES (?)',
+            [chaveMigracao]
+        );
+
+        await executar('COMMIT');
+        transacaoAberta = false;
+        console.log('Dados do banco anterior mesclados no banco raiz.');
+    } catch (erro) {
+        if (transacaoAberta) {
+            try {
+                await executar('ROLLBACK');
+            } catch (erroRollback) {
+                console.error('Erro ao desfazer migração do banco:', erroRollback.message);
+            }
+        }
+        throw erro;
+    } finally {
+        await executar('DETACH DATABASE banco_anterior');
+    }
 }
 
 // =========================================================
@@ -451,6 +536,344 @@ app.post('/api/tecnicos/cadastro', rota(async (req, res) => {
     });
 }));
 
+app.get('/api/ordens/opcoes', rota(async (req, res) => {
+    const tecnicos = await consultar(
+        'SELECT id_tecnico, nome FROM tecnicos ORDER BY nome'
+    );
+    const status = await consultar(
+        'SELECT id_status, descricao FROM status_os ORDER BY id_status'
+    );
+
+    res.json({ tecnicos, status });
+}));
+
+app.get('/api/ordens', rota(async (req, res) => {
+    const ordens = await consultar(`
+        SELECT
+            os.id_os,
+            os.data_os,
+            os.descricao_problema,
+            os.nivel_emergencia,
+            os.id_status,
+            os.id_cliente,
+            os.id_tecnico,
+            os.id_equipamento,
+            status_os.descricao AS status,
+            clientes.nome AS cliente,
+            equipamentos.nome AS equipamento,
+            tecnicos.nome AS tecnico
+        FROM ordens_servico AS os
+        LEFT JOIN status_os ON status_os.id_status = os.id_status
+        LEFT JOIN clientes ON clientes.id_cliente = os.id_cliente
+        LEFT JOIN equipamentos ON equipamentos.id_equipamento = os.id_equipamento
+        LEFT JOIN tecnicos ON tecnicos.id_tecnico = os.id_tecnico
+        ORDER BY os.id_os DESC
+    `);
+
+    res.json(ordens);
+}));
+
+app.post('/api/ordens', rota(async (req, res) => {
+    const dados = req.body || {};
+    const cliente = texto(dados.cliente);
+    const equipamento = texto(dados.equipamento);
+    const descricao = texto(dados.descricao_problema);
+    const dataOs = texto(dados.data_os);
+    const nivelEmergencia = texto(dados.nivel_emergencia);
+    const idTecnico = Number(dados.id_tecnico);
+    const idStatus = 1;
+    const niveisEmergencia = ['Baixo', 'Médio', 'Grave'];
+
+    if (!cliente || cliente.length > 120) {
+        throw erroHttp(400, 'Informe um cliente com até 120 caracteres.');
+    }
+
+    if (!equipamento || equipamento.length > 120) {
+        throw erroHttp(400, 'Informe um equipamento com até 120 caracteres.');
+    }
+
+    if (!descricao || descricao.length > 1000) {
+        throw erroHttp(400, 'Informe a descrição do problema com até 1000 caracteres.');
+    }
+
+    if (!dataValida(dataOs)) {
+        throw erroHttp(400, 'Informe uma data válida para a solicitação da OS.');
+    }
+
+    if (!niveisEmergencia.includes(nivelEmergencia)) {
+        throw erroHttp(400, 'Selecione um nível de emergência válido.');
+    }
+
+    if (!Number.isInteger(idTecnico) || idTecnico < 1) {
+        throw erroHttp(400, 'Selecione um técnico válido.');
+    }
+
+    const tecnico = await buscarUm(
+        'SELECT id_tecnico FROM tecnicos WHERE id_tecnico = ?',
+        [idTecnico]
+    );
+    const status = await buscarUm(
+        'SELECT id_status FROM status_os WHERE id_status = ?',
+        [idStatus]
+    );
+
+    if (!tecnico) throw erroHttp(400, 'O técnico selecionado não existe.');
+    if (!status) throw erroHttp(400, 'O status selecionado não existe.');
+
+    let transacaoAberta = false;
+
+    try {
+        await executar('BEGIN TRANSACTION');
+        transacaoAberta = true;
+
+        let clienteSalvo = await buscarUm(
+            'SELECT id_cliente FROM clientes WHERE nome = ? COLLATE NOCASE',
+            [cliente]
+        );
+
+        if (!clienteSalvo) {
+            const resultadoCliente = await executar(
+                'INSERT INTO clientes (nome) VALUES (?)',
+                [cliente]
+            );
+            clienteSalvo = { id_cliente: resultadoCliente.id };
+        }
+
+        let equipamentoSalvo = await buscarUm(
+            'SELECT id_equipamento FROM equipamentos WHERE nome = ? COLLATE NOCASE',
+            [equipamento]
+        );
+
+        if (!equipamentoSalvo) {
+            const resultadoEquipamento = await executar(
+                'INSERT INTO equipamentos (nome) VALUES (?)',
+                [equipamento]
+            );
+            equipamentoSalvo = { id_equipamento: resultadoEquipamento.id };
+        }
+
+        const resultadoOrdem = await executar(
+            `INSERT INTO ordens_servico
+                (descricao_problema, data_os, nivel_emergencia, id_cliente,
+                 id_tecnico, id_equipamento, id_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+                descricao,
+                dataOs,
+                nivelEmergencia,
+                clienteSalvo.id_cliente,
+                idTecnico,
+                equipamentoSalvo.id_equipamento,
+                idStatus
+            ]
+        );
+
+        await executar('COMMIT');
+        transacaoAberta = false;
+
+        res.status(201).json({
+            mensagem: 'Ordem de serviço criada com sucesso.',
+            id_os: resultadoOrdem.id
+        });
+    } catch (erro) {
+        if (transacaoAberta) {
+            try {
+                await executar('ROLLBACK');
+            } catch (erroRollback) {
+                console.error('Erro ao desfazer cadastro da OS:', erroRollback.message);
+            }
+        }
+
+        throw erro;
+    }
+}));
+
+app.put('/api/ordens/:id', rota(async (req, res) => {
+    const idOrdem = Number(req.params.id);
+    const dados = req.body || {};
+    const cliente = texto(dados.cliente);
+    const equipamento = texto(dados.equipamento);
+    const descricao = texto(dados.descricao_problema);
+    const dataOs = texto(dados.data_os);
+    const nivelEmergencia = texto(dados.nivel_emergencia);
+    const idTecnico = Number(dados.id_tecnico);
+    const idStatus = Number(dados.id_status);
+
+    if (!Number.isInteger(idOrdem) || idOrdem < 1) {
+        throw erroHttp(400, 'Identificador de OS inválido.');
+    }
+
+    if (!cliente || cliente.length > 120) {
+        throw erroHttp(400, 'Informe um cliente com até 120 caracteres.');
+    }
+
+    if (!equipamento || equipamento.length > 120) {
+        throw erroHttp(400, 'Informe um equipamento com até 120 caracteres.');
+    }
+
+    if (!descricao || descricao.length > 1000) {
+        throw erroHttp(400, 'Informe a descrição do problema com até 1000 caracteres.');
+    }
+
+    if (!dataValida(dataOs)) {
+        throw erroHttp(400, 'Informe uma data válida para a solicitação da OS.');
+    }
+
+    if (!['Baixo', 'Médio', 'Grave'].includes(nivelEmergencia)) {
+        throw erroHttp(400, 'Selecione um nível de emergência válido.');
+    }
+
+    if (!Number.isInteger(idTecnico) || idTecnico < 1) {
+        throw erroHttp(400, 'Selecione um técnico válido.');
+    }
+
+    if (![1, 2, 3].includes(idStatus)) {
+        throw erroHttp(400, 'Selecione um status válido.');
+    }
+
+    const ordemExistente = await buscarUm(
+        'SELECT id_os FROM ordens_servico WHERE id_os = ?',
+        [idOrdem]
+    );
+    const tecnico = await buscarUm(
+        'SELECT id_tecnico FROM tecnicos WHERE id_tecnico = ?',
+        [idTecnico]
+    );
+
+    if (!ordemExistente) throw erroHttp(404, 'Ordem de serviço não encontrada.');
+    if (!tecnico) throw erroHttp(400, 'O técnico selecionado não existe.');
+
+    let transacaoAberta = false;
+
+    try {
+        await executar('BEGIN TRANSACTION');
+        transacaoAberta = true;
+
+        let clienteSalvo = await buscarUm(
+            'SELECT id_cliente FROM clientes WHERE nome = ? COLLATE NOCASE',
+            [cliente]
+        );
+        if (!clienteSalvo) {
+            const resultadoCliente = await executar(
+                'INSERT INTO clientes (nome) VALUES (?)',
+                [cliente]
+            );
+            clienteSalvo = { id_cliente: resultadoCliente.id };
+        }
+
+        let equipamentoSalvo = await buscarUm(
+            'SELECT id_equipamento FROM equipamentos WHERE nome = ? COLLATE NOCASE',
+            [equipamento]
+        );
+        if (!equipamentoSalvo) {
+            const resultadoEquipamento = await executar(
+                'INSERT INTO equipamentos (nome) VALUES (?)',
+                [equipamento]
+            );
+            equipamentoSalvo = { id_equipamento: resultadoEquipamento.id };
+        }
+
+        await executar(
+            `UPDATE ordens_servico
+             SET descricao_problema = ?, data_os = ?, nivel_emergencia = ?,
+                 id_cliente = ?, id_tecnico = ?, id_equipamento = ?, id_status = ?
+             WHERE id_os = ?`,
+            [
+                descricao,
+                dataOs,
+                nivelEmergencia,
+                clienteSalvo.id_cliente,
+                idTecnico,
+                equipamentoSalvo.id_equipamento,
+                idStatus,
+                idOrdem
+            ]
+        );
+
+        await executar('COMMIT');
+        transacaoAberta = false;
+        res.json({ mensagem: 'Ordem de serviço atualizada com sucesso.' });
+    } catch (erro) {
+        if (transacaoAberta) {
+            try {
+                await executar('ROLLBACK');
+            } catch (erroRollback) {
+                console.error('Erro ao desfazer edição da OS:', erroRollback.message);
+            }
+        }
+
+        throw erro;
+    }
+}));
+
+app.delete('/api/ordens/:id', rota(async (req, res) => {
+    const idOrdem = Number(req.params.id);
+
+    if (!Number.isInteger(idOrdem) || idOrdem < 1) {
+        throw erroHttp(400, 'Identificador de OS inválido.');
+    }
+
+    const resultado = await executar(
+        'DELETE FROM ordens_servico WHERE id_os = ?',
+        [idOrdem]
+    );
+
+    if (!resultado.alteradas) {
+        throw erroHttp(404, 'Ordem de serviço não encontrada.');
+    }
+
+    res.json({ mensagem: 'Ordem de serviço excluída com sucesso.' });
+}));
+
+app.put('/api/ordens/:id/status', rota(async (req, res) => {
+    const idOrdem = Number(req.params.id);
+    const idStatus = Number((req.body || {}).id_status);
+
+    if (!Number.isInteger(idOrdem) || idOrdem < 1) {
+        throw erroHttp(400, 'Identificador de OS inválido.');
+    }
+
+    if (![1, 2, 3].includes(idStatus)) {
+        throw erroHttp(400, 'Selecione um status válido.');
+    }
+
+    const resultado = await executar(
+        'UPDATE ordens_servico SET id_status = ? WHERE id_os = ?',
+        [idStatus, idOrdem]
+    );
+
+    if (!resultado.alteradas) {
+        throw erroHttp(404, 'Ordem de serviço não encontrada.');
+    }
+
+    res.json({ mensagem: 'Status da OS atualizado com sucesso.' });
+}));
+
+// =========================================================
+// ROTA DE MÉTRICAS DA DASHBOARD (inicio.html)
+// =========================================================
+app.get('/api/ordens/resumo', rota(async (req, res) => {
+    // Consulta os totais direto da tabela ordens_servico
+    const totalOs = await buscarUm('SELECT COUNT(*) AS total FROM ordens_servico');
+    const concluidas = await buscarUm('SELECT COUNT(*) AS total FROM ordens_servico WHERE id_status = 2');
+    const emAndamento = await buscarUm('SELECT COUNT(*) AS total FROM ordens_servico WHERE id_status = 1');
+    
+    // Calcula atrasadas (OS em andamento ou pendentes cuja data é menor que a data de hoje)
+    const hoje = new Date().toISOString().slice(0, 10);
+    const atrasadas = await buscarUm(
+        `SELECT COUNT(*) AS total FROM ordens_servico 
+         WHERE id_status IN (1, 3) AND data_os < ?`,
+        [hoje]
+    );
+
+    res.json({
+        total: totalOs.total || 0,
+        concluidas: concluidas.total || 0,
+        emAndamento: emAndamento.total || 0,
+        atrasadas: atrasadas.total || 0
+    });
+}));
+
 // Mantém a rota de login de técnicos que já estava no projeto.
 // A tela de entrada NÃO usa esta rota.
 app.post('/api/tecnicos/login', rota(async (req, res) => {
@@ -580,6 +1003,7 @@ app.use((erro, req, res, next) => {
 // =========================================================
 
 prepararBanco()
+    .then(migrarBancoAnterior)
     .then(() => {
         const servidor = app.listen(3000, '127.0.0.1', () => {
             console.log('==========================================');
