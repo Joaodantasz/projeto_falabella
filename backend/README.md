@@ -2,7 +2,7 @@
 
 Este projeto usa **Node.js + Express + SQLite**.
 
-O banco de dados `banco.db` é criado automaticamente na primeira vez que você rodar o servidor.
+O banco oficial fica em `../banco.db` (na raiz do projeto) e é criado automaticamente se não existir. Na primeira inicialização, o servidor mescla os registros do antigo `backend/banco.db` sem apagar nem substituir os dados existentes.
 
 ## Como rodar
 

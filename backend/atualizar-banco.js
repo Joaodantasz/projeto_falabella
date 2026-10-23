@@ -3,7 +3,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
 // Abre somente um banco existente, evitando criar outro por engano.
-const caminho = path.join(__dirname, 'banco.db');
+const caminho = path.join(__dirname, '..', 'banco.db');
 
 const db = new sqlite3.Database(
     caminho,

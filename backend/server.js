@@ -4,7 +4,7 @@
 // - Abre os arquivos HTML e CSS do seu site.
 // - Salva os dados da tela de entrada na tabela usuarios.
 // - Mantém cadastro e login de técnicos separados.
-// - Usa o banco.db localizado na pasta deste server.js.
+// - Usa o banco.db localizado na raiz do projeto.
 // - Não apaga as tabelas nem os registros existentes.
 // =========================================================
 
