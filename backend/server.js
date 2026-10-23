@@ -97,10 +97,13 @@ function dataValida(valor) {
     );
 }
 
-// Valida os dados que as duas telas têm em comum.
-// A tela de usuários exige todos esses dados.
-// No cadastro de técnicos, mantém os dados adicionais opcionais.
-function validarPessoa(dados, exigirPerfil = false) {
+// Valida os dados comuns; campos extras podem ser exigidos por tela.
+function validarPessoa(
+    dados,
+    exigirPerfil = false,
+    exigirNascimento = false,
+    exigirGenero = false
+) {
     const nome = texto(dados.nome);
     const email = texto(dados.email).toLowerCase();
     const senha = dados.senha;
@@ -141,7 +144,7 @@ function validarPessoa(dados, exigirPerfil = false) {
 
     const nascimento = texto(dados.data_nascimento);
 
-    if ((exigirPerfil || nascimento) && !dataValida(nascimento)) {
+    if ((exigirPerfil || exigirNascimento || nascimento) && !dataValida(nascimento)) {
         throw erroHttp(400, 'Informe uma data de nascimento válida.');
     }
 
@@ -160,7 +163,7 @@ function validarPessoa(dados, exigirPerfil = false) {
     const generos = ['Masculino', 'Feminino', 'Prefiro_nao_dizer'];
 
     if (
-        (exigirPerfil || genero) &&
+        (exigirPerfil || exigirGenero || genero) &&
         !generos.includes(genero)
     ) {
         throw erroHttp(400, 'Selecione um gênero válido.');
@@ -223,10 +226,16 @@ async function prepararBanco() {
 
     // Atualiza também a tabela usuarios de versões anteriores.
     await adicionarCampos('usuarios', {
+        rm: 'TEXT',
         idade: 'INTEGER',
         data_nascimento: 'TEXT',
         genero: 'TEXT'
     });
+
+    await executar(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_rm_unico
+        ON usuarios (rm COLLATE NOCASE)
+    `);
 
     // Cadastro de técnicos: separado dos usuários da entrada.
     await executar(`
@@ -314,7 +323,13 @@ async function prepararBanco() {
 // Não é uma verificação de login.
 // Cadastra a pessoa; o HTML redireciona após receber sucesso.
 app.post('/api/usuarios/cadastro', rota(async (req, res) => {
-    const pessoa = validarPessoa(req.body || {}, true);
+    const dados = req.body || {};
+    const pessoa = validarPessoa(dados, false, true, true);
+    const rm = texto(dados.rm);
+
+    if (!rm || rm.length > 30) {
+        throw erroHttp(400, 'Informe um RM válido com até 30 caracteres.');
+    }
 
     const existente = await buscarUm(
         'SELECT id_usuario FROM usuarios WHERE email = ? COLLATE NOCASE',
@@ -328,16 +343,26 @@ app.post('/api/usuarios/cadastro', rota(async (req, res) => {
         );
     }
 
+    const rmExistente = await buscarUm(
+        'SELECT id_usuario FROM usuarios WHERE rm = ? COLLATE NOCASE',
+        [rm]
+    );
+
+    if (rmExistente) {
+        throw erroHttp(409, 'Este RM já está cadastrado.');
+    }
+
     const senhaHash = await bcrypt.hash(pessoa.senha, 10);
 
     const resultado = await executar(
         `INSERT INTO usuarios
-            (nome, email, senha_hash, idade, data_nascimento, genero)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+            (nome, email, senha_hash, rm, idade, data_nascimento, genero)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
             pessoa.nome,
             pessoa.email,
             senhaHash,
+            rm,
             pessoa.idade,
             pessoa.data_nascimento,
             pessoa.genero
@@ -347,6 +372,38 @@ app.post('/api/usuarios/cadastro', rota(async (req, res) => {
     res.status(201).json({
         mensagem: 'Dados salvos com sucesso.',
         id_usuario: resultado.id
+    });
+}));
+
+app.post('/api/usuarios/login', rota(async (req, res) => {
+    const dados = req.body || {};
+    const email = texto(dados.email).toLowerCase();
+    const senha = dados.senha;
+
+    if (!email || typeof senha !== 'string' || !senha) {
+        throw erroHttp(400, 'E-mail e senha são obrigatórios.');
+    }
+
+    if (!emailValido(email)) {
+        throw erroHttp(400, 'E-mail inválido.');
+    }
+
+    const usuario = await buscarUm(
+        'SELECT id_usuario, nome, email, senha_hash FROM usuarios WHERE email = ? COLLATE NOCASE',
+        [email]
+    );
+
+    if (!usuario || !(await bcrypt.compare(senha, usuario.senha_hash))) {
+        throw erroHttp(401, 'E-mail ou senha incorretos.');
+    }
+
+    res.json({
+        mensagem: 'Login realizado com sucesso.',
+        usuario: {
+            id_usuario: usuario.id_usuario,
+            nome: usuario.nome,
+            email: usuario.email
+        }
     });
 }));
 

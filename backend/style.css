@@ -618,7 +618,7 @@ tr:hover td {
 }
 
 .login-card .link-senha,
-.login-card .login-cadastro a {
+.login-card .login-cadastro button {
     color: var(--cor-primaria-escura);
     font-size: 13px;
     text-decoration: underline;
@@ -626,7 +626,21 @@ tr:hover td {
 
 .login-card .login-cadastro {
     margin-top: 0;
-    text-align: center;
+    font-size: 13px;
+}
+
+.login-card .login-cadastro button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+}
+
+.login-feedback {
+    min-height: 1.4em;
+    color: var(--cor-perigo);
     font-size: 13px;
 }
 
@@ -634,6 +648,73 @@ tr:hover td {
     padding: 11px 20px;
     background: var(--cor-primaria);
     color: #fff;
+}
+
+.modal-cadastro {
+    width: min(430px, calc(100% - 32px));
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    margin: auto;
+    padding: 24px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--cor-linha);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--cor-texto);
+    box-shadow: var(--sombra-hover);
+}
+
+.modal-cadastro::backdrop {
+    background: rgba(8, 32, 50, 0.58);
+    backdrop-filter: blur(3px);
+}
+
+.modal-cadastro .modal-cabecalho {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.modal-cadastro h2 {
+    margin-bottom: 5px;
+    color: var(--cor-texto);
+    font-size: 22px;
+}
+
+.modal-cadastro .modal-cabecalho p,
+.modal-cadastro .cadastro-feedback {
+    font-size: 15px;
+}
+
+.modal-cadastro .modal-fechar {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border: 1px solid var(--cor-linha);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--cor-texto);
+    cursor: pointer;
+}
+
+.modal-cadastro .formulario {
+    gap: 14px;
+}
+
+.modal-cadastro .campo input {
+    min-height: 42px;
+}
+
+.modal-cadastro .cadastro-feedback {
+    min-height: 1.4em;
+    color: var(--cor-perigo);
+}
+
+.modal-cadastro .entrar:disabled {
+    cursor: wait;
+    opacity: 0.65;
 }
 
 /* =========================
