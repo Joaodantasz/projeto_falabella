@@ -536,6 +536,139 @@ app.post('/api/tecnicos/cadastro', rota(async (req, res) => {
     });
 }));
 
+app.get('/api/tecnicos', rota(async (req, res) => {
+    const tecnicos = await consultar(`
+        SELECT
+            tecnicos.id_tecnico,
+            tecnicos.nome,
+            tecnicos.email,
+            tecnicos.idade,
+            tecnicos.data_nascimento,
+            tecnicos.genero,
+            tecnicos.nivel,
+            tecnicos.bio,
+            tecnicos.horario_contato,
+            tecnicos.data_disponivel,
+            COUNT(ordens_servico.id_os) AS os_atribuidas
+        FROM tecnicos
+        LEFT JOIN ordens_servico
+            ON ordens_servico.id_tecnico = tecnicos.id_tecnico
+        GROUP BY tecnicos.id_tecnico
+        ORDER BY tecnicos.nome
+    `);
+
+    res.json(tecnicos);
+}));
+
+app.put('/api/tecnicos/:id', rota(async (req, res) => {
+    const idTecnico = Number(req.params.id);
+    const dados = req.body || {};
+    const nome = texto(dados.nome);
+    const email = texto(dados.email).toLowerCase();
+    const senha = dados.senha;
+    const idadeTexto = texto(dados.idade);
+    const idade = idadeTexto ? Number(idadeTexto) : null;
+    const nascimento = texto(dados.data_nascimento);
+    const genero = texto(dados.genero);
+    const nivel = texto(dados.nivel);
+    const bio = texto(dados.bio);
+    const horarioContato = texto(dados.horario_contato);
+    const dataDisponivel = texto(dados.data_disponivel);
+
+    if (!Number.isInteger(idTecnico) || idTecnico < 1) {
+        throw erroHttp(400, 'Identificador de técnico inválido.');
+    }
+
+    if (!nome || nome.length > 120 || !email || email.length > 254 || !emailValido(email)) {
+        throw erroHttp(400, 'Informe nome e e-mail válidos.');
+    }
+
+    if (idadeTexto && (!Number.isInteger(idade) || idade < 18 || idade > 99)) {
+        throw erroHttp(400, 'A idade deve estar entre 18 e 99 anos.');
+    }
+
+    if (nascimento && !dataValida(nascimento)) {
+        throw erroHttp(400, 'Informe uma data de nascimento válida.');
+    }
+
+    if (genero && !['Masculino', 'Feminino', 'Prefiro_nao_dizer'].includes(genero)) {
+        throw erroHttp(400, 'Selecione um gênero válido.');
+    }
+
+    if (nivel && !['JÚNIOR', 'PLENO', 'SÊNIOR'].includes(nivel)) {
+        throw erroHttp(400, 'Selecione um nível de conhecimento válido.');
+    }
+
+    if (senha && (typeof senha !== 'string' || senha.length < 6 || Buffer.byteLength(senha, 'utf8') > 72)) {
+        throw erroHttp(400, 'A senha deve ter pelo menos 6 caracteres e no máximo 72 bytes.');
+    }
+
+    if (bio.length > 1000 || horarioContato.length > 30 || (dataDisponivel && !dataValida(dataDisponivel))) {
+        throw erroHttp(400, 'Confira a experiência, o horário e a data de disponibilidade.');
+    }
+
+    const tecnico = await buscarUm(
+        'SELECT id_tecnico, senha_hash FROM tecnicos WHERE id_tecnico = ?',
+        [idTecnico]
+    );
+    if (!tecnico) throw erroHttp(404, 'Técnico não encontrado.');
+
+    const emailExistente = await buscarUm(
+        'SELECT id_tecnico FROM tecnicos WHERE email = ? COLLATE NOCASE AND id_tecnico <> ?',
+        [email, idTecnico]
+    );
+    if (emailExistente) throw erroHttp(409, 'Este e-mail já pertence a outro técnico.');
+
+    const senhaHash = senha ? await bcrypt.hash(senha, 10) : tecnico.senha_hash;
+
+    await executar(
+        `UPDATE tecnicos
+         SET nome = ?, email = ?, senha_hash = ?, idade = ?, data_nascimento = ?,
+             genero = ?, nivel = ?, bio = ?, horario_contato = ?, data_disponivel = ?
+         WHERE id_tecnico = ?`,
+        [
+            nome,
+            email,
+            senhaHash,
+            idade,
+            nascimento || null,
+            genero || null,
+            nivel || null,
+            bio || null,
+            horarioContato || null,
+            dataDisponivel || null,
+            idTecnico
+        ]
+    );
+
+    res.json({ mensagem: 'Técnico atualizado com sucesso.' });
+}));
+
+app.delete('/api/tecnicos/:id', rota(async (req, res) => {
+    const idTecnico = Number(req.params.id);
+
+    if (!Number.isInteger(idTecnico) || idTecnico < 1) {
+        throw erroHttp(400, 'Identificador de técnico inválido.');
+    }
+
+    const tecnico = await buscarUm(
+        'SELECT id_tecnico FROM tecnicos WHERE id_tecnico = ?',
+        [idTecnico]
+    );
+    if (!tecnico) throw erroHttp(404, 'Técnico não encontrado.');
+
+    const ordensVinculadas = await buscarUm(
+        'SELECT COUNT(*) AS total FROM ordens_servico WHERE id_tecnico = ?',
+        [idTecnico]
+    );
+    if (ordensVinculadas.total > 0) {
+        throw erroHttp(409, 'Não é possível excluir este técnico enquanto houver OS atribuídas a ele.');
+    }
+
+    await executar('DELETE FROM tecnicos WHERE id_tecnico = ?', [idTecnico]);
+    res.json({ mensagem: 'Técnico excluído com sucesso.' });
+}));
+
 app.get('/api/ordens/opcoes', rota(async (req, res) => {
     const tecnicos = await consultar(
         'SELECT id_tecnico, nome FROM tecnicos ORDER BY nome'
