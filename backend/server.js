@@ -327,8 +327,8 @@ app.post('/api/usuarios/cadastro', rota(async (req, res) => {
     const pessoa = validarPessoa(dados, false, true, true);
     const rm = texto(dados.rm);
 
-    if (!rm || rm.length > 30) {
-        throw erroHttp(400, 'Informe um RM válido com até 30 caracteres.');
+    if (!rm || rm.length > 4) {
+        throw erroHttp(400, 'Informe um RM válido com até 4 caracteres.');
     }
 
     const existente = await buscarUm(
